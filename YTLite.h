@@ -8,11 +8,18 @@
 
 #define LOC(key) [NSBundle.ytl_defaultBundle localizedStringForKey:key value:nil table:nil]
 
-#define ytlBool(key) [[YTLUserDefaults standardUserDefaults] boolForKey:key]
-#define ytlInt(key) [[YTLUserDefaults standardUserDefaults] integerForKey:key]
+// Optimized caching macros for frequently accessed settings
+#define ytlBool(key) ytlCachedBool(key)
+#define ytlInt(key) ytlCachedInt(key)
 
-#define ytlSetBool(value, key) [[YTLUserDefaults standardUserDefaults] setBool:(value) forKey:(key)]
-#define ytlSetInt(value, key) [[YTLUserDefaults standardUserDefaults] setInteger:(value) forKey:(key)]
+#define ytlSetBool(value, key) ytlSetCachedBool((value), (key))
+#define ytlSetInt(value, key) ytlSetCachedInt((value), (key))
+
+// Caching function declarations
+BOOL ytlCachedBool(NSString *key);
+NSInteger ytlCachedInt(NSString *key);
+void ytlSetCachedBool(BOOL value, NSString *key);
+void ytlSetCachedInt(NSInteger value, NSString *key);
 
 @interface YTTouchFeedbackController : YTCollectionViewCell
 @property (nonatomic, strong, readwrite) UIColor *feedbackColor;
