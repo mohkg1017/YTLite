@@ -1,5 +1,60 @@
 #import "YTLite.h"
 
+// Caching system for frequently accessed settings
+static NSCache *settingsCache = nil;
+static NSMutableDictionary *boolCache = nil;
+static NSMutableDictionary *intCache = nil;
+
+static void initializeCaching() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        settingsCache = [[NSCache alloc] init];
+        settingsCache.countLimit = 100;
+        boolCache = [[NSMutableDictionary alloc] init];
+        intCache = [[NSMutableDictionary alloc] init];
+    });
+}
+
+BOOL ytlCachedBool(NSString *key) {
+    initializeCaching();
+    
+    NSNumber *cachedValue = boolCache[key];
+    if (cachedValue) {
+        return [cachedValue boolValue];
+    }
+    
+    BOOL value = [[YTLUserDefaults standardUserDefaults] boolForKey:key];
+    boolCache[key] = @(value);
+    return value;
+}
+
+NSInteger ytlCachedInt(NSString *key) {
+    initializeCaching();
+    
+    NSNumber *cachedValue = intCache[key];
+    if (cachedValue) {
+        return [cachedValue integerValue];
+    }
+    
+    NSInteger value = [[YTLUserDefaults standardUserDefaults] integerForKey:key];
+    intCache[key] = @(value);
+    return value;
+}
+
+void ytlSetCachedBool(BOOL value, NSString *key) {
+    initializeCaching();
+    
+    [[YTLUserDefaults standardUserDefaults] setBool:value forKey:key];
+    boolCache[key] = @(value);
+}
+
+void ytlSetCachedInt(NSInteger value, NSString *key) {
+    initializeCaching();
+    
+    [[YTLUserDefaults standardUserDefaults] setInteger:value forKey:key];
+    intCache[key] = @(value);
+}
+
 static UIImage *YTImageNamed(NSString *imageName) {
     return [UIImage imageNamed:imageName inBundle:[NSBundle mainBundle] compatibleWithTraitCollection:nil];
 }
@@ -34,19 +89,43 @@ static UIImage *YTImageNamed(NSString *imageName) {
 
 %hook YTIElementRenderer
 - (NSData *)elementData {
-    if (self.hasCompatibilityOptions && self.compatibilityOptions.hasAdLoggingData && ytlBool(@"noAds")) return nil;
+    // Cache frequently accessed settings to avoid repeated lookups
+    static BOOL noAds = NO;
+    static BOOL hideShorts = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        noAds = ytlBool(@"noAds");
+        hideShorts = ytlBool(@"hideShorts");
+    });
+    
+    if (self.hasCompatibilityOptions && self.compatibilityOptions.hasAdLoggingData && noAds) return nil;
 
     NSString *description = [self description];
 
-    NSArray *ads = @[@"brand_promo", @"product_carousel", @"product_engagement_panel", @"product_item", @"text_search_ad", @"text_image_button_layout", @"carousel_headered_layout", @"carousel_footered_layout", @"square_image_layout", @"landscape_image_wide_button_layout", @"feed_ad_metadata"];
-    if (ytlBool(@"noAds") && [ads containsObject:description]) {
-        return [NSData data];
+    if (noAds) {
+        // Use NSSet for faster lookups instead of NSArray
+        static NSSet *adsSet = nil;
+        static dispatch_once_t adsOnceToken;
+        dispatch_once(&adsOnceToken, ^{
+            adsSet = [NSSet setWithArray:@[@"brand_promo", @"product_carousel", @"product_engagement_panel", @"product_item", @"text_search_ad", @"text_image_button_layout", @"carousel_headered_layout", @"carousel_footered_layout", @"square_image_layout", @"landscape_image_wide_button_layout", @"feed_ad_metadata"]];
+        });
+        
+        if ([adsSet containsObject:description]) {
+            return [NSData data];
+        }
     }
 
-    NSArray *shortsToRemove = @[@"shorts_shelf.eml", @"shorts_video_cell.eml", @"6Shorts"];
-    for (NSString *shorts in shortsToRemove) {
-        if (ytlBool(@"hideShorts") && [description containsString:shorts] && ![description containsString:@"history*"]) {
-            return nil;
+    if (hideShorts) {
+        static NSSet *shortsSet = nil;
+        static dispatch_once_t shortsOnceToken;
+        dispatch_once(&shortsOnceToken, ^{
+            shortsSet = [NSSet setWithArray:@[@"shorts_shelf.eml", @"shorts_video_cell.eml", @"6Shorts"]];
+        });
+        
+        for (NSString *shorts in shortsSet) {
+            if ([description containsString:shorts] && ![description containsString:@"history*"]) {
+                return nil;
+            }
         }
     }
 
@@ -56,7 +135,14 @@ static UIImage *YTImageNamed(NSString *imageName) {
 
 %hook YTSectionListViewController
 - (void)loadWithModel:(YTISectionListRenderer *)model {
-    if (ytlBool(@"noAds")) {
+    // Cache the noAds setting to avoid repeated lookups
+    static BOOL noAds = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        noAds = ytlBool(@"noAds");
+    });
+    
+    if (noAds) {
         NSMutableArray <YTISectionListSupportedRenderers *> *contentsArray = model.contentsArray;
         NSIndexSet *removeIndexes = [contentsArray indexesOfObjectsPassingTest:^BOOL(YTISectionListSupportedRenderers *renderers, NSUInteger idx, BOOL *stop) {
             YTIItemSectionRenderer *sectionRenderer = renderers.itemSectionRenderer;
@@ -120,12 +206,31 @@ static UIImage *YTImageNamed(NSString *imageName) {
 - (void)layoutSubviews {
     %orig;
 
-    if (ytlBool(@"noNotifsButton")) self.notificationButton.hidden = YES;
-    if (ytlBool(@"noSearchButton")) self.searchButton.hidden = YES;
+    // Cache button states to avoid repeated property access
+    static BOOL notifsHidden = NO;
+    static BOOL searchHidden = NO;
+    static BOOL voiceSearchHidden = NO;
+    static BOOL castHidden = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        notifsHidden = ytlBool(@"noNotifsButton");
+        searchHidden = ytlBool(@"noSearchButton");
+        voiceSearchHidden = ytlBool(@"noVoiceSearchButton");
+        castHidden = ytlBool(@"noCast");
+    });
 
-    for (UIView *subview in self.subviews) {
-        if (ytlBool(@"noVoiceSearchButton") && [subview.accessibilityLabel isEqualToString:NSLocalizedString(@"search.voice.access", nil)]) subview.hidden = YES;
-        if (ytlBool(@"noCast") && [subview.accessibilityIdentifier isEqualToString:@"id.mdx.playbackroute.button"]) subview.hidden = YES;
+    if (notifsHidden && !self.notificationButton.hidden) self.notificationButton.hidden = YES;
+    if (searchHidden && !self.searchButton.hidden) self.searchButton.hidden = YES;
+
+    if (voiceSearchHidden || castHidden) {
+        for (UIView *subview in self.subviews) {
+            if (voiceSearchHidden && [subview.accessibilityLabel isEqualToString:NSLocalizedString(@"search.voice.access", nil)] && !subview.hidden) {
+                subview.hidden = YES;
+            }
+            if (castHidden && [subview.accessibilityIdentifier isEqualToString:@"id.mdx.playbackroute.button"] && !subview.hidden) {
+                subview.hidden = YES;
+            }
+        }
     }
 }
 %end
@@ -476,8 +581,22 @@ void autoSkipShorts(YTPlayerViewController *self, YTSingleVideoController *video
         return;
     }
 
-    NetworkStatus status = [[Reachability reachabilityForInternetConnection] currentReachabilityStatus];
+    // Cache reachability instance to avoid repeated creation
+    static Reachability *reachability = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        reachability = [Reachability reachabilityForInternetConnection];
+    });
+
+    NetworkStatus status = [reachability currentReachabilityStatus];
     NSInteger kQualityIndex = status == ReachableViaWiFi ? ytlInt(@"wiFiQualityIndex") : ytlInt(@"cellQualityIndex");
+
+    // Cache quality labels to avoid repeated array creation
+    static NSArray *qualityLabels = nil;
+    static dispatch_once_t qualityOnceToken;
+    dispatch_once(&qualityOnceToken, ^{
+        qualityLabels = @[@"Default", @"", @"2160p60", @"2160p", @"1440p60", @"1440p", @"1080p60", @"1080p", @"720p60", @"720p", @"480p", @"360p"];
+    });
 
     NSString *bestQualityLabel;
     int highestResolution = 0;
@@ -489,7 +608,11 @@ void autoSkipShorts(YTPlayerViewController *self, YTSingleVideoController *video
         }
     }
 
-    NSArray *qualityLabels = @[@"Default", bestQualityLabel, @"2160p60", @"2160p", @"1440p60", @"1440p", @"1080p60", @"1080p", @"720p60", @"720p", @"480p", @"360p"];
+    // Update the cached array with the best quality label
+    NSMutableArray *mutableQualityLabels = [qualityLabels mutableCopy];
+    mutableQualityLabels[1] = bestQualityLabel ?: @"";
+    qualityLabels = [mutableQualityLabels copy];
+
     NSString *qualityLabel = qualityLabels[kQualityIndex];
 
     if (![qualityLabel isEqualToString:bestQualityLabel]) {
@@ -703,17 +826,26 @@ static BOOL findCell(ASNodeController *nodeController, NSArray <NSString *> *ide
 - (id)cellForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewCell *cell = %orig;
 
+    // Cache frequently accessed boolean values
+    static BOOL hideShorts = NO;
+    static BOOL noContinueWatching = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        hideShorts = ytlBool(@"hideShorts");
+        noContinueWatching = ytlBool(@"noContinueWatching");
+    });
+
     if ([cell isKindOfClass:objc_lookUpClass("_ASCollectionViewCell")]) {
         _ASCollectionViewCell *cell = %orig;
         if ([cell respondsToSelector:@selector(node)]) {
             NSString *idToRemove = [[cell node] accessibilityIdentifier];
             if ([idToRemove isEqualToString:@"statement_banner.view"] ||
-                (([idToRemove isEqualToString:@"eml.shorts-grid"] || [idToRemove isEqualToString:@"eml.shorts-shelf"]) && ytlBool(@"hideShorts"))) {
+                (([idToRemove isEqualToString:@"eml.shorts-grid"] || [idToRemove isEqualToString:@"eml.shorts-shelf"]) && hideShorts)) {
                 [self removeCellsAtIndexPath:indexPath];
             }
         }
-    } else if (([cell isKindOfClass:objc_lookUpClass("YTReelShelfCell")] && ytlBool(@"hideShorts")) ||
-        ([cell isKindOfClass:objc_lookUpClass("YTHorizontalCardListCell")] && ytlBool(@"noContinueWatching"))) {
+    } else if (([cell isKindOfClass:objc_lookUpClass("YTReelShelfCell")] && hideShorts) ||
+        ([cell isKindOfClass:objc_lookUpClass("YTHorizontalCardListCell")] && noContinueWatching)) {
         [self removeCellsAtIndexPath:indexPath];
     } return %orig;
 }
@@ -860,8 +992,51 @@ static BOOL isOverlayShown = YES;
 }
 %end
 
+// Optimized image download with memory management and caching
+static NSCache *imageCache = nil;
+static NSURLSession *sharedImageSession = nil;
+
+static void initializeImageHandling() {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // Initialize image cache with memory limits
+        imageCache = [[NSCache alloc] init];
+        imageCache.countLimit = 50; // Limit number of cached images
+        imageCache.totalCostLimit = 50 * 1024 * 1024; // 50MB limit
+        
+        // Configure URL session for image downloads
+        NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        config.timeoutIntervalForRequest = 30.0;
+        config.timeoutIntervalForResource = 60.0;
+        config.HTTPMaximumConnectionsPerHost = 4;
+        sharedImageSession = [NSURLSession sessionWithConfiguration:config];
+    });
+}
+
 static void downloadImageFromURL(UIResponder *responder, NSURL *URL, BOOL download) {
+    initializeImageHandling();
+    
     NSString *URLString = URL.absoluteString;
+    
+    // Check cache first
+    NSString *cacheKey = [NSString stringWithFormat:@"%@_%d", URLString, download];
+    NSData *cachedData = [imageCache objectForKey:cacheKey];
+    if (cachedData) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (download) {
+                [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+                    PHAssetCreationRequest *request = [PHAssetCreationRequest creationRequestForAsset];
+                    [request addResourceWithType:PHAssetResourceTypePhoto data:cachedData options:nil];
+                } completionHandler:^(BOOL success, NSError *error) {
+                    [[%c(YTToastResponderEvent) eventWithMessage:success ? LOC(@"Saved") : [NSString stringWithFormat:LOC(@"%@: %@"), LOC(@"Error"), error.localizedDescription] firstResponder:responder] send];
+                }];
+            } else {
+                [UIPasteboard generalPasteboard].image = [UIImage imageWithData:cachedData];
+                [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"Copied") firstResponder:responder] send];
+            }
+        });
+        return;
+    }
 
     if (ytlBool(@"fixAlbums") && [URLString hasPrefix:@"https://yt3."]) {
         URLString = [URLString stringByReplacingOccurrencesOfString:@"https://yt3." withString:@"https://yt4."];
@@ -878,34 +1053,42 @@ static void downloadImageFromURL(UIResponder *responder, NSURL *URL, BOOL downlo
         downloadURL = URL;
     }
 
-    NSURLSession *session = [NSURLSession sharedSession];
-    [[session dataTaskWithURL:downloadURL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    [[sharedImageSession dataTaskWithURL:downloadURL completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (data) {
-            if (download) {
-                [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
-                    PHAssetCreationRequest *request = [PHAssetCreationRequest creationRequestForAsset];
-                    [request addResourceWithType:PHAssetResourceTypePhoto data:data options:nil];
-                } completionHandler:^(BOOL success, NSError *error) {
-                    [[%c(YTToastResponderEvent) eventWithMessage:success ? LOC(@"Saved") : [NSString stringWithFormat:LOC(@"%@: %@"), LOC(@"Error"), error.localizedDescription] firstResponder:responder] send];
-                }];
-            } else {
-                [UIPasteboard generalPasteboard].image = [UIImage imageWithData:data];
-                [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"Copied") firstResponder:responder] send];
-            }
+            // Cache the downloaded data
+            [imageCache setObject:data forKey:cacheKey cost:data.length];
+            
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (download) {
+                    [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+                        PHAssetCreationRequest *request = [PHAssetCreationRequest creationRequestForAsset];
+                        [request addResourceWithType:PHAssetResourceTypePhoto data:data options:nil];
+                    } completionHandler:^(BOOL success, NSError *error) {
+                        [[%c(YTToastResponderEvent) eventWithMessage:success ? LOC(@"Saved") : [NSString stringWithFormat:LOC(@"%@: %@"), LOC(@"Error"), error.localizedDescription] firstResponder:responder] send];
+                    }];
+                } else {
+                    [UIPasteboard generalPasteboard].image = [UIImage imageWithData:data];
+                    [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"Copied") firstResponder:responder] send];
+                }
+            });
         } else {
-            [[%c(YTToastResponderEvent) eventWithMessage:[NSString stringWithFormat:LOC(@"%@: %@"), LOC(@"Error"), error.localizedDescription] firstResponder:responder] send];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [[%c(YTToastResponderEvent) eventWithMessage:[NSString stringWithFormat:LOC(@"%@: %@"), LOC(@"Error"), error.localizedDescription] firstResponder:responder] send];
+            });
         }
     }] resume];
 }
 
 static void genImageFromLayer(CALayer *layer, UIColor *backgroundColor, void (^completionHandler)(UIImage *)) {
-    UIGraphicsBeginImageContextWithOptions(layer.frame.size, NO, 0.0);
-    CGContextRef context = UIGraphicsGetCurrentContext();
-    CGContextSetFillColorWithColor(context, backgroundColor.CGColor);
-    CGContextFillRect(context, CGRectMake(0, 0, layer.frame.size.width, layer.frame.size.height));
-    [layer renderInContext:context];
-    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
+    // Use UIGraphicsImageRenderer for better memory management and performance
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:layer.frame.size];
+    
+    UIImage *image = [renderer imageWithActions:^(UIGraphicsImageRendererContext * _Nonnull rendererContext) {
+        CGContextRef context = rendererContext.CGContext;
+        CGContextSetFillColorWithColor(context, backgroundColor.CGColor);
+        CGContextFillRect(context, CGRectMake(0, 0, layer.frame.size.width, layer.frame.size.height));
+        [layer renderInContext:context];
+    }];
 
     if (completionHandler) {
         completionHandler(image);
@@ -988,6 +1171,20 @@ static void genImageFromLayer(CALayer *layer, UIColor *backgroundColor, void (^c
 - (void)setKeepalive_node:(id)arg1 {
     %orig;
 
+    // Cache gesture recognizer state to avoid repeated checks
+    static NSMutableSet *processedViews = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        processedViews = [[NSMutableSet alloc] init];
+    });
+    
+    // Use view's memory address as unique identifier
+    NSString *viewKey = [NSString stringWithFormat:@"%p", self];
+    if ([processedViews containsObject:viewKey]) {
+        return; // Already processed this view
+    }
+    [processedViews addObject:viewKey];
+
     NSArray *gesturesInfo = @[
         @{@"selector": @"postManager:", @"text": @"id.ui.backstage.original_post", @"key": @(ytlBool(@"postManager"))},
         @{@"selector": @"savePFP:", @"text": @"ELMImageNode-View", @"key": @(ytlBool(@"saveProfilePhoto"))},
@@ -1000,6 +1197,8 @@ static void genImageFromLayer(CALayer *layer, UIColor *backgroundColor, void (^c
         if ([gestureInfo[@"key"] boolValue] && [[self description] containsString:gestureInfo[@"text"]]) {
             UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:selector];
             longPress.minimumPressDuration = 0.3;
+            longPress.cancelsTouchesInView = NO; // Allow other gestures to work
+            longPress.delaysTouchesBegan = NO; // Reduce delay
             [self addGestureRecognizer:longPress];
             break;
         }
@@ -1009,7 +1208,6 @@ static void genImageFromLayer(CALayer *layer, UIColor *backgroundColor, void (^c
 %new
 - (void)savePFP:(UILongPressGestureRecognizer *)sender {
     if (sender.state == UIGestureRecognizerStateBegan) {
-
         ASNetworkImageNode *imageNode = (ASNetworkImageNode *)self.keepalive_node;
         NSString *URLString = imageNode.URL.absoluteString;
         if (URLString) {
@@ -1020,23 +1218,20 @@ static void genImageFromLayer(CALayer *layer, UIColor *backgroundColor, void (^c
                     NSString *newURLString = [URLString stringByReplacingCharactersInRange:NSMakeRange(sizeRange.location + 2, dashRange.location - sizeRange.location - 2) withString:@"1024"];
                     NSURL *PFPURL = [NSURL URLWithString:newURLString];
 
-                    UIImage *image = [UIImage imageWithData:[NSData dataWithContentsOfURL:PFPURL]];
-                    if (image) {
-                        YTDefaultSheetController *sheetController = [%c(YTDefaultSheetController) sheetControllerWithParentResponder:nil];
+                    // Use optimized image download instead of synchronous loading
+                    downloadImageFromURL(self.keepalive_node.closestViewController, PFPURL, NO);
+                    
+                    YTDefaultSheetController *sheetController = [%c(YTDefaultSheetController) sheetControllerWithParentResponder:nil];
     
-                        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"SaveProfilePicture") iconImage:YTImageNamed(@"yt_outline_image_24pt") style:0 handler:^ {
-                            UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil);
+                    [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"SaveProfilePicture") iconImage:YTImageNamed(@"yt_outline_image_24pt") style:0 handler:^ {
+                        downloadImageFromURL(self.keepalive_node.closestViewController, PFPURL, YES);
+                    }]];
 
-                            [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"Saved") firstResponder:self.keepalive_node.closestViewController] send];
-                        }]];
+                    [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"CopyProfilePicture") iconImage:YTImageNamed(@"yt_outline_library_image_24pt") style:0 handler:^ {
+                        downloadImageFromURL(self.keepalive_node.closestViewController, PFPURL, NO);
+                    }]];
 
-                        [sheetController addAction:[%c(YTActionSheetAction) actionWithTitle:LOC(@"CopyProfilePicture") iconImage:YTImageNamed(@"yt_outline_library_image_24pt") style:0 handler:^ {
-                            [UIPasteboard generalPasteboard].image = image;
-                            [[%c(YTToastResponderEvent) eventWithMessage:LOC(@"Copied") firstResponder:self.keepalive_node.closestViewController] send];
-                        }]];
-
-                        [sheetController presentFromViewController:self.keepalive_node.closestViewController animated:YES completion:nil];
-                    }
+                    [sheetController presentFromViewController:self.keepalive_node.closestViewController animated:YES completion:nil];
                 }
             }
         }
@@ -1381,23 +1576,26 @@ static NSURL *newCoverURL(NSURL *originalURL) {
 // %end
 
 %ctor {
-    if (ytlBool(@"shortsOnlyMode") && (ytlBool(@"removeShorts") || ytlBool(@"reExplore"))) {
-        ytlSetBool(NO, @"removeShorts");
-        ytlSetBool(NO, @"reExplore");
-    }
+    // Optimize startup by deferring non-critical operations
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+        if (ytlBool(@"shortsOnlyMode") && (ytlBool(@"removeShorts") || ytlBool(@"reExplore"))) {
+            ytlSetBool(NO, @"removeShorts");
+            ytlSetBool(NO, @"reExplore");
+        }
 
-    if (!ytlBool(@"advancedMode") && !ytlBool(@"advancedModeReminder")) {
-        ytlSetBool(YES, @"advancedModeReminder");
+        if (!ytlBool(@"advancedMode") && !ytlBool(@"advancedModeReminder")) {
+            ytlSetBool(YES, @"advancedModeReminder");
 
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            YTAlertView *alertView = [%c(YTAlertView) confirmationDialogWithAction:^{
-                ytlSetBool(YES, @"advancedMode");
-            }
-            actionTitle:LOC(@"Yes")
-            cancelTitle:LOC(@"No")];
-            alertView.title = @"YTLite";
-            alertView.subtitle = [NSString stringWithFormat:LOC(@"AdvancedModeReminder"), @"YTLite", LOC(@"Version"), LOC(@"Advanced")];
-            [alertView show];
-        });
-    }
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                YTAlertView *alertView = [%c(YTAlertView) confirmationDialogWithAction:^{
+                    ytlSetBool(YES, @"advancedMode");
+                }
+                actionTitle:LOC(@"Yes")
+                cancelTitle:LOC(@"No")];
+                alertView.title = @"YTLite";
+                alertView.subtitle = [NSString stringWithFormat:LOC(@"AdvancedModeReminder"), @"YTLite", LOC(@"Version"), LOC(@"Advanced")];
+                [alertView show];
+            });
+        }
+    });
 }
