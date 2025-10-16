@@ -14,7 +14,8 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = YTLite
 $(TWEAK_NAME)_FRAMEWORKS = UIKit Foundation SystemConfiguration
-$(TWEAK_NAME)_CFLAGS = -fobjc-arc -DTWEAK_VERSION=$(PACKAGE_VERSION)
+$(TWEAK_NAME)_CFLAGS = -fobjc-arc -DTWEAK_VERSION=$(PACKAGE_VERSION) -Os -flto -fvisibility=hidden -fvisibility-inlines-hidden -Wno-unused-variable -Wno-unused-function
 $(TWEAK_NAME)_FILES = $(wildcard *.x Utils/*.m)
+$(TWEAK_NAME)_LDFLAGS = -Wl,-dead_strip -Wl,-x
 
 include $(THEOS_MAKE_PATH)/tweak.mk

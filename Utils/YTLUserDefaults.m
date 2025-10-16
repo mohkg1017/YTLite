@@ -10,7 +10,10 @@ static NSString *const kDefaultsSuiteName = @"com.dvntm.ytlite";
 
     dispatch_once(&onceToken, ^{
         defaults = [[self alloc] initWithSuiteName:kDefaultsSuiteName];
-        [defaults registerDefaults];
+        // Defer defaults registration to avoid blocking startup
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
+            [defaults registerDefaults];
+        });
     });
 
     return defaults;
