@@ -469,6 +469,13 @@ static void TMReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkRea
 
 -(void)reachabilityChanged:(SCNetworkReachabilityFlags)flags
 {
+    // Cache previous state to avoid unnecessary callbacks
+    static SCNetworkReachabilityFlags previousFlags = 0;
+    if (previousFlags == flags) {
+        return; // No change, skip processing
+    }
+    previousFlags = flags;
+    
     if([self isReachableWithFlags:flags])
     {
         if(self.reachableBlock)
